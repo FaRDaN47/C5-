@@ -1,0 +1,205 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --color-ink: #17212b;
+  --color-muted: #77818d;
+  --color-canvas: #f6f7f8;
+  --color-line: #e8ebee;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-surface-raised: #f1f5f9;
+  --color-text-subtle: #64748b;
+  --color-text-soft: #94a3b8;
+  --color-border-soft: #e2e8f0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  color: #17212b;
+  background: #f6f7f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --color-ink: #e8edf2;
+  --color-muted: #a0adba;
+  --color-canvas: #10161d;
+  --color-line: #2a3540;
+  --color-surface: #19222c;
+  --color-surface-muted: #1d2833;
+  --color-surface-raised: #26323e;
+  --color-text-subtle: #b4c0cc;
+  --color-text-soft: #8998a7;
+  --color-border-soft: #35414d;
+  background: var(--color-canvas);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 360px;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(132, 184, 61, 0.45);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line shadow-card;
+    background-color: var(--color-surface);
+  }
+
+  .field {
+    @apply mt-1 block w-full rounded-lg border-line text-sm text-ink shadow-sm focus:border-lime focus:ring-lime;
+    background-color: var(--color-surface);
+  }
+
+  .button-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-ink px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .button-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line px-3.5 py-2.5 text-sm font-semibold text-ink transition disabled:cursor-not-allowed disabled:opacity-50;
+    background-color: var(--color-surface);
+  }
+}
+
+.dark .bg-white {
+  background-color: var(--color-surface);
+}
+
+.dark [class~="bg-white/95"] {
+  background-color: var(--color-surface);
+}
+
+.dark .bg-slate-50 {
+  background-color: var(--color-surface-muted);
+}
+
+.dark .bg-slate-100 {
+  background-color: var(--color-surface-raised);
+}
+
+.dark .text-slate-300,
+.dark .text-slate-400 {
+  color: var(--color-text-soft);
+}
+
+.dark .text-slate-500,
+.dark .text-slate-600 {
+  color: var(--color-text-subtle);
+}
+
+.dark .text-slate-700,
+.dark .text-slate-800,
+.dark .text-slate-900 {
+  color: var(--color-ink);
+}
+
+.dark .border-slate-100,
+.dark .border-slate-200 {
+  border-color: var(--color-border-soft);
+}
+
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-slate-100:hover {
+  background-color: var(--color-surface-raised);
+}
+
+.dark .hover\:text-ink:hover {
+  color: var(--color-ink);
+}
+
+.dark input,
+.dark select,
+.dark textarea {
+  color-scheme: dark;
+  background-color: var(--color-surface);
+}
+
+.dark ::placeholder {
+  color: var(--color-text-soft);
+  opacity: 1;
+}
+
+.dark .shadow-card {
+  --tw-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+  --tw-shadow-colored: 0 2px 12px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
+    var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+
+.dark .recharts-cartesian-grid line {
+  stroke: var(--color-line);
+}
+
+.dark .recharts-text {
+  fill: var(--color-muted);
+}
+
+.dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+  border-color: var(--color-line) !important;
+  background-color: var(--color-surface) !important;
+  color: var(--color-ink) !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body,
+  .card,
+  .button-secondary {
+    transition: background-color 160ms ease, color 160ms ease,
+      border-color 160ms ease;
+  }
+}
+
+@media print {
+  @page {
+    margin: 18mm;
+  }
+
+  body {
+    background: white;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .print-modal,
+  .print-modal * {
+    visibility: visible !important;
+  }
+
+  .print-modal {
+    position: absolute !important;
+    inset: 0 !important;
+    max-height: none !important;
+    width: 100% !important;
+    max-width: none !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+}
