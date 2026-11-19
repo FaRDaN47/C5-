@@ -48,8 +48,11 @@ import {
 } from "react";
 import AssistantPanel, { type AssistantTab } from "./components/AssistantPanel";
 import { garageApi } from "./lib/api";
+import { csvCell } from "./lib/csv";
 import {
   activeReminders,
+  clearAssistantStorage,
+  clearLegacyAssistantStorage,
   deriveReminders,
   loadActivity,
   loadSnoozes,
@@ -289,6 +292,7 @@ function App() {
   }, [profile?.workshop_id]);
 
   useEffect(() => {
+    clearLegacyAssistantStorage();
     if (!authClient) {
       setAuthReady(true);
       return;
@@ -575,7 +579,14 @@ function App() {
     const { error } = await authClient.signOut();
     if (error) setToast({ text: error.message || "Unable to sign out.", kind: "error" });
     else {
+      clearAssistantStorage();
+      setActivity([]);
+      setSnoozes({});
+      setAssistantOpen(false);
+      setSelectedInvoice(null);
+      setAuthForm((current) => ({ ...current, password: "" }));
       setData(emptyData);
+      setProfile(null);
       setSession(null);
       setToast(null);
     }
@@ -2509,10 +2520,6 @@ function ReportsPage({
       </div>
     </>
   );
-}
-
-function csvCell(value: string) {
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function MiniStat({

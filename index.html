@@ -12,15 +12,7 @@
       rel="stylesheet"
     />
     <title>GarageOS — Workshop management</title>
-    <script>
-      (() => {
-        const savedTheme = localStorage.getItem("garageos-theme");
-        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        if (savedTheme === "dark" || (!savedTheme && prefersDark)) {
-          document.documentElement.classList.add("dark");
-        }
-      })();
-    </script>
+    <script type="module" src="/src/theme.ts"></script>
   </head>
   <body>
     <div id="root"></div>

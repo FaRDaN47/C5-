@@ -17,14 +17,13 @@ import type {
   Vehicle,
 } from "../src/lib/types.js";
 
-class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+import {
+  ApiError,
+  consumeRateLimit,
+  readJsonBody,
+  secureResponse,
+  validateRequest,
+} from "../server/security.js";
 
 const roleSchema = z.enum([
   "owner",
@@ -42,7 +41,11 @@ const jobStatusSchema = z.enum([
   "completed",
   "collected",
 ]);
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const dateSchema = z.iso.date();
+const moneySchema = z.number().finite().min(0).max(9_999_999_999.99)
+  .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 0.001,
+    "Amounts must have at most two decimal places.");
+const quantitySchema = quantitySchema.max(2_147_483_647);
 const optionalDateSchema = dateSchema.nullable();
 const emailSchema = z.string().trim().email().max(254);
 const nameSchema = z.string().trim().min(1).max(160);
@@ -71,7 +74,7 @@ const actionSchema = z.discriminatedUnion("action", [
     make: z.string().trim().min(1).max(80),
     model: z.string().trim().min(1).max(100),
     manufacturingYear: z.number().int().min(1886).max(2200).nullable(),
-    mileage: z.number().int().min(0).nullable(),
+    mileage: quantitySchema.nullable(),
     engineType: z.string().trim().max(80).nullable(),
   }),
   z.object({
@@ -105,27 +108,27 @@ const actionSchema = z.discriminatedUnion("action", [
     action: z.literal("savePart"),
     name: z.string().trim().min(1).max(160),
     sku: z.string().trim().min(1).max(80),
-    quantityOnHand: z.number().int().min(0),
-    minimumStock: z.number().int().min(0),
-    purchasePrice: z.number().finite().min(0),
-    sellingPrice: z.number().finite().min(0),
+    quantityOnHand: quantitySchema,
+    minimumStock: quantitySchema,
+    purchasePrice: moneySchema,
+    sellingPrice: moneySchema,
   }),
   z.object({
     action: z.literal("recordPartUsage"),
     jobId: idSchema,
     partId: idSchema,
-    quantity: z.number().int().positive(),
+    quantity: quantitySchema.min(1),
   }),
   z.object({
     action: z.literal("saveInvoice"),
     jobId: idSchema,
-    amountTotal: z.number().finite().positive(),
+    amountTotal: moneySchema.min(0.01),
     dueDate: optionalDateSchema,
   }),
   z.object({
     action: z.literal("recordPayment"),
     invoiceId: idSchema,
-    amount: z.number().finite().positive(),
+    amount: moneySchema.min(0.01),
     method: z.enum(["cash", "bank_transfer", "mpesa"]),
     reference: z.string().trim().max(120).nullable(),
   }),
@@ -180,6 +183,10 @@ function getPool() {
       connectionString,
       max: 5,
       idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+      statement_timeout: 15_000,
+      lock_timeout: 5_000,
+      idle_in_transaction_session_timeout: 15_000,
     });
     if (process.env.VERCEL) attachDatabasePool(pool);
   }
@@ -210,6 +217,7 @@ async function authenticate(request: Request): Promise<AuthClaims> {
   try {
     ({ payload } = await jwtVerify(match[1], getJwks(), {
       algorithms: ["EdDSA"],
+      requiredClaims: ["exp", "sub", "email"],
       issuer: origin,
       audience: origin,
     }));
@@ -217,7 +225,7 @@ async function authenticate(request: Request): Promise<AuthClaims> {
     if (error instanceof joseErrors.JOSEError) {
       throw new ApiError(401, "Your session is invalid or expired. Sign in again.");
     }
-    console.error("Neon Auth token verification failed.", error);
+    console.error("Neon Auth token verification failed.");
     throw new ApiError(503, "Neon Auth could not verify your session.");
   }
 
@@ -277,13 +285,11 @@ async function createOrAcceptProfile(
   const existing = await selectProfile(client, claims.id);
   if (existing) return existing;
 
+  if (!claims.emailVerified) {
+    throw new ApiError(403, "Verify your email before creating a workshop or accepting an invitation.");
+  }
+
   if (input.inviteToken) {
-    if (!claims.emailVerified) {
-      throw new ApiError(
-        403,
-        "Verify your email in Neon Auth before accepting a staff invitation.",
-      );
-    }
     const tokenHash = createHash("sha256")
       .update(input.inviteToken)
       .digest("hex");
@@ -308,6 +314,7 @@ async function createOrAcceptProfile(
       throw new ApiError(403, "This staff invitation is invalid or expired.");
     }
 
+    await client.query("SELECT set_config('garageos.invite_token_hash', $1, true)", [tokenHash]);
     await client.query(
       `INSERT INTO public.profiles (id, workshop_id, email, full_name, role)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -991,12 +998,20 @@ async function saveInvoice(
 ) {
   const { client, profile } = context;
   requireRoles(profile, ["owner", "manager", "accountant"]);
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `invoice:${profile.workshop_id}:${input.jobId}`,
+  ]);
   const job = await client.query<{ customer_id: string }>(
     `SELECT customer_id FROM public.job_cards
      WHERE id = $1 AND workshop_id = $2`,
     [input.jobId, profile.workshop_id],
   );
   if (!job.rowCount) throw new ApiError(404, "Repair job not found.");
+  const existing = await client.query(
+    "SELECT 1 FROM public.invoices WHERE workshop_id = $1 AND job_card_id = $2",
+    [profile.workshop_id, input.jobId],
+  );
+  if (existing.rowCount) throw new ApiError(409, "This repair job already has an invoice.");
   const invoice = await client.query<{ id: string }>(
     `INSERT INTO public.invoices
        (workshop_id, job_card_id, customer_id, amount_total, due_date, created_by)
@@ -1162,17 +1177,8 @@ async function sendWhatsAppNotification(job: NotificationJob) {
     throw new ApiError(502, "Meta returned an invalid WhatsApp response.");
   }
   if (!response.ok) {
-    const metaMessage =
-      typeof result === "object" &&
-      result !== null &&
-      "error" in result &&
-      typeof result.error === "object" &&
-      result.error !== null &&
-      "message" in result.error &&
-      typeof result.error.message === "string"
-        ? result.error.message
-        : `Meta Graph API returned HTTP ${response.status}.`;
-    throw new ApiError(502, `WhatsApp message was not accepted: ${metaMessage}`);
+    console.error("WhatsApp provider rejected a message.", { status: response.status });
+    throw new ApiError(502, "WhatsApp message was not accepted. Check the notification configuration.");
   }
   const messageId =
     typeof result === "object" &&
@@ -1283,7 +1289,10 @@ async function runAction(claims: AuthClaims, input: ActionInput) {
 
 function errorResponse(error: unknown) {
   if (error instanceof ApiError) {
-    return Response.json({ error: error.message }, { status: error.status });
+    return Response.json({ error: error.message }, {
+      status: error.status,
+      headers: error.headers,
+    });
   }
   const code =
     typeof error === "object" && error !== null && "code" in error
@@ -1301,7 +1310,7 @@ function errorResponse(error: unknown) {
       { status: 400 },
     );
   }
-  console.error("GarageOS API request failed.", error);
+  console.error("GarageOS API request failed.", { code: /^\w{5}$/.test(code) ? code : "internal" });
   return Response.json(
     { error: "The request could not be completed. Check the server logs." },
     { status: 500 },
@@ -1309,32 +1318,25 @@ function errorResponse(error: unknown) {
 }
 
 export async function handleGarageRequest(request: Request): Promise<Response> {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method not allowed." }, { status: 405 });
-  }
-  const contentLength = Number(request.headers.get("content-length") || 0);
-  if (contentLength > 64 * 1024) {
-    return Response.json({ error: "Request body is too large." }, { status: 413 });
-  }
-  if (!request.headers.get("content-type")?.includes("application/json")) {
-    return Response.json({ error: "Send a JSON request body." }, { status: 415 });
-  }
-
   try {
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      throw new ApiError(400, "Request body must be valid JSON.");
-    }
+    validateRequest(request);
+    const body = await readJsonBody(request);
     const parsed = actionSchema.safeParse(body);
     if (!parsed.success) {
-      throw new ApiError(400, parsed.error.issues[0]?.message || "Invalid request.");
+      throw new ApiError(400, "The submitted values are invalid.");
     }
     const claims = await authenticate(request);
+    consumeRateLimit(`user:${claims.id}`, 120, 60_000);
+    if (parsed.data.action === "inviteStaff") {
+      consumeRateLimit(`invites:${claims.id}`, 10, 3_600_000);
+    }
+    if (parsed.data.action === "sendWhatsAppNotification") {
+      consumeRateLimit(`notifications:${claims.id}`, 20, 60_000);
+      consumeRateLimit(`notification-job:${claims.id}:${parsed.data.jobId}`, 1, 60_000);
+    }
     const result = await runAction(claims, parsed.data);
-    return Response.json(result);
+    return secureResponse(Response.json(result));
   } catch (error) {
-    return errorResponse(error);
+    return secureResponse(errorResponse(error));
   }
 }

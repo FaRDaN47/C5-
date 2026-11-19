@@ -95,9 +95,33 @@ const statusNames: Record<string, string> = {
   collected: "Collected",
 };
 
+function clearStoredAssistantData(storage: Storage) {
+  const keys = Object.keys(storage).filter((key) =>
+    key.startsWith("garageos-activity-") || key.startsWith("garageos-snoozes-"),
+  );
+  for (const key of keys) storage.removeItem(key);
+}
+
+export function clearLegacyAssistantStorage() {
+  try {
+    clearStoredAssistantData(window.localStorage);
+  } catch {
+    // Storage may be blocked by the browser.
+  }
+}
+
+export function clearAssistantStorage() {
+  clearLegacyAssistantStorage();
+  try {
+    clearStoredAssistantData(window.sessionStorage);
+  } catch {
+    // Storage may be blocked by the browser.
+  }
+}
+
 function readStore<T>(key: string, fallback: T): T {
   try {
-    const raw = window.localStorage.getItem(key);
+    const raw = window.sessionStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
@@ -106,7 +130,7 @@ function readStore<T>(key: string, fallback: T): T {
 
 function writeStore(key: string, value: unknown) {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    window.sessionStorage.setItem(key, JSON.stringify(value));
   } catch {
     // Storage can be unavailable (private mode); the assistant still works in-memory.
   }
