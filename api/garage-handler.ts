@@ -837,7 +837,11 @@ async function updateJobStatus(
   await client.query(
     `UPDATE public.job_cards
      SET status = $1,
-         actual_completion_date = CASE WHEN $1 = 'completed' THEN current_date ELSE NULL END,
+         actual_completion_date = CASE
+           WHEN $1 = 'completed' THEN current_date
+           WHEN $1 = 'collected' THEN actual_completion_date
+           ELSE NULL
+         END,
          updated_at = now()
      WHERE id = $2 AND workshop_id = $3`,
     [input.status, input.jobId, profile.workshop_id],
