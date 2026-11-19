@@ -45,7 +45,7 @@ const dateSchema = z.iso.date();
 const moneySchema = z.number().finite().min(0).max(9_999_999_999.99)
   .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 0.001,
     "Amounts must have at most two decimal places.");
-const quantitySchema = quantitySchema.max(2_147_483_647);
+const quantitySchema = z.number().int().min(0).max(2_147_483_647);
 const optionalDateSchema = dateSchema.nullable();
 const emailSchema = z.string().trim().email().max(254);
 const nameSchema = z.string().trim().min(1).max(160);
@@ -184,9 +184,6 @@ function getPool() {
       max: 5,
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
-      statement_timeout: 15_000,
-      lock_timeout: 5_000,
-      idle_in_transaction_session_timeout: 15_000,
     });
     if (process.env.VERCEL) attachDatabasePool(pool);
   }
@@ -382,8 +379,11 @@ async function withProfileContext<T>(
   bootstrap?: Extract<ActionInput, { action: "workspace" }>,
 ): Promise<T> {
   const client = await getPool().connect();
-  await client.query("BEGIN");
   try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout = '15s'");
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    await client.query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
     await client.query("SET LOCAL ROLE garageos_app");
     await setIdentity(client, claims);
     let profile = await selectProfile(client, claims.id);

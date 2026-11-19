@@ -1,3 +1,4 @@
+import "./validation";
 import { createAuthClient } from "@neon/auth";
 import { BetterAuthReactAdapter } from "@neon/auth/react/adapters";
 

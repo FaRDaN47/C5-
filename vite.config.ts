@@ -1,6 +1,8 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import garageHandler from "./api/garage.js";
 import react from "@vitejs/plugin-react";
+import deploymentConfig from "./vercel.json";
+import { securityHeaders } from "./server/security.js";
 
 const backendEnvironmentKeys = [
   "DATABASE_URL",
@@ -16,6 +18,15 @@ const backendEnvironmentKeys = [
 function garageApiPlugin(): Plugin {
   return {
     name: "garageos-api",
+    configurePreviewServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (new URL(request.url || "/", "http://localhost").pathname !== "/api/garage") {
+          next();
+          return;
+        }
+        void garageHandler(request, response);
+      });
+    },
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
         if (new URL(request.url || "/", "http://localhost").pathname !== "/api/garage") {
@@ -38,6 +49,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), garageApiPlugin()],
+    server: { host: "127.0.0.1", headers: securityHeaders },
+    preview: {
+      host: "127.0.0.1",
+      headers: Object.fromEntries(deploymentConfig.headers[0].headers.map(({ key, value }) => [key, value])),
+    },
     build: {
       rollupOptions: {
         output: {

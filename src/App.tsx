@@ -268,6 +268,7 @@ function App() {
   const [snoozes, setSnoozes] = useState<Record<string, number>>({});
   const [reminderTick, setReminderTick] = useState(() => Date.now());
   const seenReminderIds = useRef<Set<string> | null>(null);
+  const sessionGeneration = useRef(0);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -280,14 +281,16 @@ function App() {
 
   const refresh = useCallback(async () => {
     if (!profile?.workshop_id) return;
+    const generation = sessionGeneration.current;
     setDataLoading(true);
     setDataError("");
     try {
-      setData(await garageApi<GarageData>("data"));
+      const result = await garageApi<GarageData>("data");
+      if (generation === sessionGeneration.current) setData(result);
     } catch (error) {
-      setDataError(messageOf(error));
+      if (generation === sessionGeneration.current) setDataError(messageOf(error));
     } finally {
-      setDataLoading(false);
+      if (generation === sessionGeneration.current) setDataLoading(false);
     }
   }, [profile?.workshop_id]);
 
@@ -385,16 +388,19 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const assistantScope = profile ? `${profile.workshop_id}:${profile.id}:${profile.role}` : null;
+
   useEffect(() => {
-    if (!profile?.workshop_id) {
+    seenReminderIds.current = null;
+    if (!assistantScope) {
       setActivity([]);
       setSnoozes({});
       seenReminderIds.current = null;
       return;
     }
-    setActivity(loadActivity(profile.workshop_id));
-    setSnoozes(loadSnoozes(profile.workshop_id));
-  }, [profile?.workshop_id]);
+    setActivity(loadActivity(assistantScope));
+    setSnoozes(loadSnoozes(assistantScope));
+  }, [assistantScope]);
 
   const shortcutLabel =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
@@ -483,11 +489,11 @@ function App() {
       );
       setActivity((current) => {
         const next = [event, ...current].slice(0, 200);
-        saveActivity(profile.workshop_id, next);
+        if (assistantScope) saveActivity(assistantScope, next);
         return next;
       });
     },
-    [profile?.workshop_id, profile?.full_name],
+    [assistantScope, profile?.workshop_id, profile?.full_name],
   );
 
   const runAction = async (
@@ -495,8 +501,10 @@ function App() {
     successText = "Changes saved",
     activityEntry?: { label: string; kind: ActivityKind; detail?: string },
   ) => {
+    const generation = sessionGeneration.current;
     try {
       await action();
+      if (generation !== sessionGeneration.current) return;
       setFormErrors({});
       if (activityEntry) {
         logActivity(activityEntry.label, activityEntry.kind, activityEntry.detail);
@@ -579,6 +587,7 @@ function App() {
     const { error } = await authClient.signOut();
     if (error) setToast({ text: error.message || "Unable to sign out.", kind: "error" });
     else {
+      sessionGeneration.current += 1;
       clearAssistantStorage();
       setActivity([]);
       setSnoozes({});
@@ -1809,6 +1818,7 @@ function App() {
       )}
 
       <AssistantPanel
+        key={assistantScope}
         open={assistantOpen}
         tab={assistantTab}
         setTab={setAssistantTab}
@@ -1829,7 +1839,7 @@ function App() {
           if (!profile?.workshop_id) return;
           setSnoozes((current) => {
             const next = { ...current, [reminderId]: snoozeUntil() };
-            saveSnoozes(profile.workshop_id, next);
+            if (assistantScope) saveSnoozes(assistantScope, next);
             return next;
           });
           setToast({ text: "Reminder snoozed for 12 hours.", kind: "info" });
@@ -1838,7 +1848,7 @@ function App() {
           if (!profile?.workshop_id) return;
           if (!window.confirm("Clear the monitored activity log?")) return;
           setActivity([]);
-          saveActivity(profile.workshop_id, []);
+          if (assistantScope) saveActivity(assistantScope, []);
         }}
       />
 

@@ -136,8 +136,17 @@ function writeStore(key: string, value: unknown) {
   }
 }
 
-export function loadActivity(workshopId: string): ActivityEvent[] {
-  return readStore<ActivityEvent[]>(`garageos-activity-${workshopId}`, []);
+export function loadActivity(scope: string): ActivityEvent[] {
+  const stored = readStore<unknown>(`garageos-activity-${scope}`, []);
+  if (!Array.isArray(stored)) return [];
+  return stored.filter((event): event is ActivityEvent =>
+    event && typeof event === "object" &&
+    typeof event.id === "string" && typeof event.at === "string" &&
+    Number.isFinite(Date.parse(event.at)) &&
+    typeof event.actor === "string" && typeof event.label === "string" &&
+    (event.detail === undefined || typeof event.detail === "string") &&
+    ["create", "update", "delete", "payment", "status", "system"].includes(event.kind),
+  ).slice(0, ACTIVITY_LIMIT);
 }
 
 export function saveActivity(workshopId: string, events: ActivityEvent[]) {
@@ -145,13 +154,13 @@ export function saveActivity(workshopId: string, events: ActivityEvent[]) {
 }
 
 export function loadSnoozes(workshopId: string): Record<string, number> {
-  const stored = readStore<Record<string, number>>(
-    `garageos-snoozes-${workshopId}`,
-    {},
-  );
+  const stored = readStore<unknown>(`garageos-snoozes-${workshopId}`, {});
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
   const now = Date.now();
   return Object.fromEntries(
-    Object.entries(stored).filter(([, until]) => until > now),
+    Object.entries(stored).filter(([, until]) =>
+      typeof until === "number" && Number.isFinite(until) && until > now && until <= now + SNOOZE_MS,
+    ),
   );
 }
 
