@@ -191,8 +191,27 @@ textarea:focus-visible {
   }
 }
 
+@keyframes assistant-pop {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.assistant-msg {
+  animation: assistant-pop 240ms ease both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
+    animation: none;
+  }
+
+  .assistant-msg {
     animation: none;
   }
 }

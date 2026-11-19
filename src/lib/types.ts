@@ -1,3 +1,14 @@
+export type Page =
+  | "Overview"
+  | "Jobs"
+  | "Customers"
+  | "Vehicles"
+  | "Appointments"
+  | "Inventory"
+  | "Invoices"
+  | "Reports"
+  | "Team";
+
 export type Role =
   | "owner"
   | "manager"

@@ -22,6 +22,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Sun,
   UsersRound,
   Wrench,
@@ -41,10 +42,24 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import AssistantPanel, { type AssistantTab } from "./components/AssistantPanel";
 import { garageApi } from "./lib/api";
+import {
+  activeReminders,
+  deriveReminders,
+  loadActivity,
+  loadSnoozes,
+  newActivityEvent,
+  saveActivity,
+  saveSnoozes,
+  snoozeUntil,
+  type ActivityEvent,
+  type ActivityKind,
+} from "./lib/assistant";
 import { authClient, isNeonAuthConfigured, type AuthSessionData } from "./lib/auth";
 import { whatsappNotificationsEnabled } from "./lib/config";
 import type {
@@ -54,6 +69,7 @@ import type {
   Invoice,
   JobCard,
   JobStatus,
+  Page,
   Payment,
   Profile,
   Role,
@@ -61,16 +77,6 @@ import type {
   Vehicle,
 } from "./lib/types";
 
-type Page =
-  | "Overview"
-  | "Jobs"
-  | "Customers"
-  | "Vehicles"
-  | "Appointments"
-  | "Inventory"
-  | "Invoices"
-  | "Reports"
-  | "Team";
 type Modal =
   | "customer"
   | "vehicle"
@@ -253,6 +259,12 @@ function App() {
   const [inviteToken] = useState(
     () => new URLSearchParams(window.location.search).get("invite"),
   );
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantTab, setAssistantTab] = useState<AssistantTab>("chat");
+  const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [snoozes, setSnoozes] = useState<Record<string, number>>({});
+  const [reminderTick, setReminderTick] = useState(() => Date.now());
+  const seenReminderIds = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -355,10 +367,30 @@ function App() {
         event.preventDefault();
         setCommandOpen((open) => !open);
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        setAssistantOpen((open) => !open);
+      }
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setReminderTick(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!profile?.workshop_id) {
+      setActivity([]);
+      setSnoozes({});
+      seenReminderIds.current = null;
+      return;
+    }
+    setActivity(loadActivity(profile.workshop_id));
+    setSnoozes(loadSnoozes(profile.workshop_id));
+  }, [profile?.workshop_id]);
 
   const shortcutLabel =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
@@ -394,13 +426,77 @@ function App() {
     return true;
   });
 
+  const assistantPermissions = useMemo(
+    () => ({
+      finance: canManageInvoices,
+      inventory: canManageInventory,
+      appointments: canManageCustomers,
+    }),
+    [canManageInvoices, canManageInventory, canManageCustomers],
+  );
+
+  const reminders = useMemo(
+    () =>
+      activeReminders(
+        deriveReminders(data, assistantPermissions, reminderTick),
+        snoozes,
+        reminderTick,
+      ),
+    [data, assistantPermissions, snoozes, reminderTick],
+  );
+
+  useEffect(() => {
+    if (dataLoading) return;
+    const currentIds = new Set(reminders.map((reminder) => reminder.id));
+    const previous = seenReminderIds.current;
+    seenReminderIds.current = currentIds;
+    const fresh = previous
+      ? reminders.filter(
+          (reminder) =>
+            !previous.has(reminder.id) && reminder.severity !== "info",
+        )
+      : reminders.filter((reminder) => reminder.severity !== "info");
+    if (!fresh.length || assistantOpen) return;
+    const urgent = fresh.filter((reminder) => reminder.severity === "urgent").length;
+    setToast((current) =>
+      current ?? {
+        text: urgent
+          ? `Assistant: ${urgent} urgent item${urgent === 1 ? "" : "s"} need${urgent === 1 ? "s" : ""} attention — open the bell to review.`
+          : `Assistant: ${fresh.length} new reminder${fresh.length === 1 ? "" : "s"} — open the bell to review.`,
+        kind: "info",
+      },
+    );
+  }, [reminders, dataLoading, assistantOpen]);
+
+  const logActivity = useCallback(
+    (label: string, kind: ActivityKind, detail?: string) => {
+      if (!profile?.workshop_id) return;
+      const event = newActivityEvent(
+        profile.full_name || "Staff",
+        label,
+        kind,
+        detail,
+      );
+      setActivity((current) => {
+        const next = [event, ...current].slice(0, 200);
+        saveActivity(profile.workshop_id, next);
+        return next;
+      });
+    },
+    [profile?.workshop_id, profile?.full_name],
+  );
+
   const runAction = async (
     action: () => Promise<void>,
     successText = "Changes saved",
+    activityEntry?: { label: string; kind: ActivityKind; detail?: string },
   ) => {
     try {
       await action();
       setFormErrors({});
+      if (activityEntry) {
+        logActivity(activityEntry.label, activityEntry.kind, activityEntry.detail);
+      }
       setToast({ text: successText, kind: "success" });
     } catch (error) {
       setToast({ text: messageOf(error), kind: "error" });
@@ -508,7 +604,11 @@ function App() {
       await refresh();
       setCustomerToEdit(null);
       setModal(null);
-    }, customerToEdit ? "Customer updated" : "Customer added");
+    }, customerToEdit ? "Customer updated" : "Customer added", {
+      label: customerToEdit ? "Updated customer" : "Added customer",
+      kind: customerToEdit ? "update" : "create",
+      detail: fullName,
+    });
   };
 
   const archiveCustomer = async (customer: Customer) => {
@@ -516,7 +616,11 @@ function App() {
     await runAction(async () => {
       await garageApi("archiveCustomer", { customerId: customer.id });
       await refresh();
-    }, "Customer archived");
+    }, "Customer archived", {
+      label: "Archived customer",
+      kind: "delete",
+      detail: customer.full_name,
+    });
   };
 
   const saveVehicle = async (event: FormEvent<HTMLFormElement>) => {
@@ -565,7 +669,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Vehicle registered");
+    }, "Vehicle registered", {
+      label: "Registered vehicle",
+      kind: "create",
+      detail: `${registrationNumber} · ${make} ${model}`,
+    });
   };
 
   const saveAppointment = async (event: FormEvent<HTMLFormElement>) => {
@@ -594,7 +702,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Appointment booked");
+    }, "Appointment booked", {
+      label: "Booked appointment",
+      kind: "create",
+      detail: `${data.customers.find((customer) => customer.id === customerId)?.full_name || "Customer"} · ${shortDate(scheduledAt)} ${scheduledDate.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}`,
+    });
   };
 
   const cancelAppointment = async (appointment: Appointment) => {
@@ -602,7 +714,11 @@ function App() {
     await runAction(async () => {
       await garageApi("cancelAppointment", { appointmentId: appointment.id });
       await refresh();
-    }, "Appointment cancelled");
+    }, "Appointment cancelled", {
+      label: "Cancelled appointment",
+      kind: "delete",
+      detail: `${appointment.customer?.full_name || "Customer"} · ${shortDate(appointment.scheduled_at)}`,
+    });
   };
 
   const inviteStaff = async (event: FormEvent<HTMLFormElement>) => {
@@ -626,7 +742,11 @@ function App() {
       setInviteUrl(
         `${window.location.origin}/?invite=${encodeURIComponent(result.token)}`,
       );
-    }, "Invitation link created");
+    }, "Invitation link created", {
+      label: "Invited staff member",
+      kind: "create",
+      detail: `${fullName} · ${role}`,
+    });
   };
 
   const saveJob = async (event: FormEvent<HTMLFormElement>) => {
@@ -681,7 +801,11 @@ function App() {
           };
         }
       }
-    }, "Job card created");
+    }, "Job card created", {
+      label: "Created job card",
+      kind: "create",
+      detail: `${data.vehicles.find((vehicle) => vehicle.id === vehicleId)?.registration_number || "Vehicle"} · ${data.customers.find((customer) => customer.id === customerId)?.full_name || "Customer"}`,
+    });
     if (notificationToast) setToast(notificationToast);
   };
 
@@ -694,6 +818,11 @@ function App() {
       return;
     }
     await refresh();
+    logActivity(
+      `Moved ${job.job_number} to ${statusNames[status]}`,
+      "status",
+      job.vehicle?.registration_number,
+    );
     if (
       whatsappNotificationsEnabled &&
       ["owner", "manager", "receptionist"].includes(profile?.role || "") &&
@@ -762,7 +891,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Part added to inventory");
+    }, "Part added to inventory", {
+      label: "Added spare part",
+      kind: "create",
+      detail: `${name} · ${sku} · ${quantity} in stock`,
+    });
   };
 
   const recordPartUsage = async (event: FormEvent<HTMLFormElement>) => {
@@ -790,7 +923,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Part usage recorded and stock updated");
+    }, "Part usage recorded and stock updated", {
+      label: "Recorded parts usage",
+      kind: "update",
+      detail: `${quantity} × ${part?.name || "part"} → ${data.jobs.find((job) => job.id === jobId)?.job_number || "job"}`,
+    });
   };
 
   const saveInvoice = async (event: FormEvent<HTMLFormElement>) => {
@@ -817,7 +954,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Invoice created");
+    }, "Invoice created", {
+      label: "Created invoice",
+      kind: "create",
+      detail: `${job.job_number} · ${money(amount)}`,
+    });
   };
 
   const recordPayment = async (event: FormEvent<HTMLFormElement>) => {
@@ -847,7 +988,11 @@ function App() {
       });
       await refresh();
       setModal(null);
-    }, "Payment recorded");
+    }, "Payment recorded", {
+      label: "Recorded payment",
+      kind: "payment",
+      detail: `${money(amount)} · ${invoice.invoice_number} · ${String(form.get("method") || "").replace("_", " ")}`,
+    });
   };
 
   const saveWorkshop = async (event: FormEvent<HTMLFormElement>) => {
@@ -862,7 +1007,11 @@ function App() {
       await garageApi("saveWorkshop", { name });
       setWorkshopName(name);
       setModal(null);
-    }, "Workshop details updated");
+    }, "Workshop details updated", {
+      label: "Updated workshop name",
+      kind: "update",
+      detail: name,
+    });
   };
 
   if (!isNeonAuthConfigured) return <SetupScreen />;
@@ -1135,6 +1284,17 @@ function App() {
             </label>
             <span className="hidden h-6 w-px bg-line sm:block" />
             <button
+              aria-label="Open workshop assistant"
+              title={`Workshop assistant (Ctrl J)`}
+              onClick={() => {
+                setAssistantTab("chat");
+                setAssistantOpen(true);
+              }}
+              className={`relative rounded-xl p-2 transition hover:bg-slate-50 ${assistantOpen ? "text-accent" : "text-slate-500 hover:text-ink"}`}
+            >
+              <Sparkles size={18} />
+            </button>
+            <button
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               onClick={() =>
@@ -1145,19 +1305,20 @@ function App() {
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <button
-              title="Notifications"
-              onClick={() =>
-                setToast({
-                  text: lowStock.length
-                    ? `${lowStock.length} part${lowStock.length === 1 ? "" : "s"} at or below minimum stock.`
-                    : "You're all caught up.",
-                  kind: "info",
-                })
-              }
+              title={reminders.length ? `${reminders.length} assistant reminder${reminders.length === 1 ? "" : "s"}` : "Assistant reminders"}
+              aria-label="Open assistant reminders"
+              onClick={() => {
+                setAssistantTab("reminders");
+                setAssistantOpen(true);
+              }}
               className="relative rounded-xl p-2 text-slate-500 hover:bg-slate-50"
             >
               <Bell size={18} />
-              {lowStock.length > 0 && <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-surface" />}
+              {reminders.length > 0 && (
+                <span className={`absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold text-white ring-2 ring-surface ${reminders.some((reminder) => reminder.severity === "urgent") ? "bg-rose-500" : "bg-amber-500"}`}>
+                  {reminders.length}
+                </span>
+              )}
             </button>
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent ring-1 ring-inset ring-accent-line">
               {initials(profile.full_name || session.user.email)}
@@ -1610,6 +1771,10 @@ function App() {
             setModal(next);
           }}
           onOpenInvoice={setSelectedInvoice}
+          onAssistant={() => {
+            setAssistantTab("chat");
+            setAssistantOpen(true);
+          }}
           onToggleTheme={() =>
             setTheme((current) => (current === "dark" ? "light" : "dark"))
           }
@@ -1631,6 +1796,40 @@ function App() {
           </div>
         </Modal>
       )}
+
+      <AssistantPanel
+        open={assistantOpen}
+        tab={assistantTab}
+        setTab={setAssistantTab}
+        onClose={() => setAssistantOpen(false)}
+        data={data}
+        activity={activity}
+        reminders={reminders}
+        workshopName={workshopName}
+        userName={profile.full_name || session.user.email || "there"}
+        permissions={assistantPermissions}
+        onNavigate={(next, term) => {
+          setPage(next);
+          setSearch(term || "");
+          setMobileNavOpen(false);
+        }}
+        onOpenInvoice={setSelectedInvoice}
+        onSnooze={(reminderId) => {
+          if (!profile?.workshop_id) return;
+          setSnoozes((current) => {
+            const next = { ...current, [reminderId]: snoozeUntil() };
+            saveSnoozes(profile.workshop_id, next);
+            return next;
+          });
+          setToast({ text: "Reminder snoozed for 12 hours.", kind: "info" });
+        }}
+        onClearActivity={() => {
+          if (!profile?.workshop_id) return;
+          if (!window.confirm("Clear the monitored activity log?")) return;
+          setActivity([]);
+          saveActivity(profile.workshop_id, []);
+        }}
+      />
 
       {toast && (
         <div
@@ -2497,6 +2696,7 @@ function CommandPalette({
   onNavigate,
   onCreate,
   onOpenInvoice,
+  onAssistant,
   onToggleTheme,
 }: {
   data: GarageData;
@@ -2515,6 +2715,7 @@ function CommandPalette({
   onNavigate: (page: Page, search?: string) => void;
   onCreate: (modal: Exclude<Modal, null>) => void;
   onOpenInvoice: (invoice: Invoice) => void;
+  onAssistant: () => void;
   onToggleTheme: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -2540,6 +2741,7 @@ function CommandPalette({
   }, [active]);
 
   const actions: PaletteItem[] = [];
+  actions.push({ key: "assistant", group: "Quick actions", label: "Open workshop assistant", hint: "Reminders, activity log and quick answers · Ctrl J", icon: Sparkles, run: onAssistant });
   if (permissions.job) {
     actions.push({ key: "new-job", group: "Quick actions", label: "New job card", hint: "Check in a vehicle and open a repair", icon: ClipboardList, run: () => onCreate("job") });
   }
